@@ -1,4 +1,4 @@
-SRC = main.c strbuf.c
+SRC = main.c strbuf.c lexer.c
 OBJ = $(SRC:.c=.o)
 CFLAGS = -g -Wall -pedantic
 
