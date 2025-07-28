@@ -1,6 +1,6 @@
-SRC = main.c strbuf.c lexer.c
+SRC = main.c strbuf.c lexer.c parser.c debug.c
 OBJ = $(SRC:.c=.o)
-CFLAGS = -g -Wall -pedantic
+CFLAGS = -g -Wall -pedantic -DDEBUG
 
 %.o: %.c %.h
 	$(CC) $(CFLAGS) -c -o $@ $<
