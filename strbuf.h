@@ -11,5 +11,6 @@ void strbuf_init(strbuf *str, int capacity);
 void strbuf_free(strbuf *str);
 void strbuf_clear(strbuf *str);
 void strbuf_append(strbuf *str, char ch);
+void strbuf_join(strbuf *str, const char *str2);
 
 #endif

@@ -1,5 +1,6 @@
 #include "strbuf.h"
 #include <stdlib.h>
+#include <string.h>
 
 
 void strbuf_init(strbuf *str, int capacity)
@@ -30,4 +31,19 @@ void strbuf_append(strbuf *str, char ch)
     str->chars[str->len] = ch;
     str->chars[str->len+1] = '\0';
     str->len++;
+}
+
+void strbuf_join(strbuf *str, const char *str2)
+{
+    int len;
+
+    len = strlen(str2);
+    if (str->len + len >= str->capacity-1) {
+        while (str->len + len >= str->capacity-1) {
+            str->capacity *= 2;
+        }
+        str->chars = realloc(str->chars, str->capacity);
+    }
+    strcpy(str->chars + str->len, str2);
+    str->len += len;
 }
