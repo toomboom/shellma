@@ -1,45 +1,56 @@
 #include <stdlib.h>
 #include "lexer.h"
+#include "parser.h"
+#ifdef DEBUG
+#include "debug.h"
+#endif
 
 
-void print_tokens(token_list *lst)
+
+int read_tokens(lexer *lex, token_item **ptoks, int *ch)
 {
-    token_item *item = lst->head;
-    while (item != NULL) {
-        printf("([%s] %s)%c", item->value,
-               lexer_get_token_name(item->type),
-               item->next == NULL ? '\n' : ' ');
-        item = item->next;
+    printf("> ");
+    lexer_start(lex);
+    while ((*ch = fgetc(stdin)) != EOF) {
+        lexer_feed(lex, *ch);
+        if (lex->eol) {
+            break;
+        }
     }
+    return lexer_end(lex, ptoks);
 }
 
 int main(int argc, const char **argv)
 {
     lexer lex;
-    token_list tokens;
-    int ch;
+    ast_node *ast;
+    token_item *invalid, *tokens;
+    int status, last_char = 0;
 
     lexer_init(&lex);
     for (;;) {
-        printf("> ");
-        lexer_start(&lex, &tokens);
-        while ((ch = fgetc(stdin)) != EOF) {
-            lexer_feed(&lex, ch);
-            if (lex.eol) {
-                break;
-            }
+        status = read_tokens(&lex, &tokens, &last_char);
+        if (status != 0) {
+            fprintf(stderr, "lexer error: %s\n", lexer_error_msg(status));
+            continue;
         }
-        lexer_end(&lex);
-        if (lex.status != 0) {
-            lexer_print_error(&lex, argv[0], stderr);
+
+        status = parse(&ast, tokens, &invalid);
+        if (status != 0) {
+            fprintf(stderr, "syntax error near %s\n",
+                    status == unexpected_end ? "end of line" : invalid->value);
+            continue;
         }
-        print_tokens(&tokens);
-        token_list_free(&tokens);
-        if (ch == EOF) {
-            putchar('\n');
+#ifdef DEBUG
+        log_tokens(stdout, tokens);
+        log_ast(stdout, ast);
+#endif
+        tokens_free(tokens);
+        if (last_char == EOF) {
             break;
         }
     }
+    putchar('\n');
     lexer_free(&lex);
     return 0;
 }
