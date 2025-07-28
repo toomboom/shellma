@@ -4,23 +4,19 @@
 #include "lexer.h"
 
 
-static void token_list_init(token_list *lst)
+void tokens_free(token_item *head)
 {
-    lst->head = lst->tail = NULL;
-}
-
-void token_list_free(token_list *lst)
-{
-    while (lst->head != NULL) {
-        token_item *tmp = lst->head;
-        lst->head = lst->head->next;
+    while (head != NULL) {
+        token_item *tmp = head;
+        head = head->next;
         free(tmp->value);
         free(tmp);
     }
 }
 
-static void token_list_push(
-    token_list *lst, enum token_type type, const char *value)
+static void push_token(
+    token_item **phead, token_item **ptail,
+    enum token_type type, const char *value)
 {
     token_item *tmp;
 
@@ -28,12 +24,12 @@ static void token_list_push(
     tmp->type = type;
     tmp->value = strdup(value);
     tmp->next = NULL;
-    if (lst->tail != NULL) {
-        lst->tail->next = tmp;
+    if (*ptail != NULL) {
+        (*ptail)->next = tmp;
     } else {
-        lst->head = tmp;
+        *phead = tmp;
     }
-    lst->tail = tmp;
+    *ptail = tmp;
 }
 
 void lexer_init(lexer *l)
@@ -47,39 +43,38 @@ void lexer_free(lexer *l)
     strbuf_free(&l->cur);
 }
 
-void lexer_start(lexer *l, token_list *list)
+void lexer_start(lexer *l)
 {
-    token_list_init(list);
-    l->list = list;
+    l->head = l->tail = NULL;
     strbuf_clear(&l->cur);
     l->type = token_word;
     l->have_token = l->eol = 0;
     l->in_squote = l->in_dquote = l->in_escape = 0;
-    l->status = lexer_ok;
     l->line_num++;
     l->char_num = 0;
 }
 
 static void save_token(lexer *l)
 {
-    token_list_push(l->list, l->type, l->cur.chars);
+    push_token(&l->head, &l->tail, l->type, l->cur.chars);
     l->have_token = 0;
     strbuf_clear(&l->cur);
 }
 
-void lexer_end(lexer *l)
+enum lexer_error lexer_end(lexer *l, token_item **phead)
 {
+    *phead = l->head;
     if (l->in_squote || l->in_dquote) {
-        l->status = lexer_unclosed_quote;
-        return;
+        return lexer_unclosed_quote;
     }
     if (l->in_escape) {
-        l->status = lexer_unfinished_escaping;
-        return;
+        return lexer_unfinished_escaping;
     }
     if (l->have_token) {
         save_token(l);
+        *phead = l->head;
     }
+    return lexer_ok;
 }
 
 static void append_char(lexer *l, enum token_type type, char ch)
@@ -175,9 +170,9 @@ void lexer_feed(lexer *l, char ch)
     } else if (ch == ';') {
         process_single_operator(l, token_semicolon, ch);
     } else if (ch == '>') {
-        process_doubleable_operator(l, token_great, token_append, ch);
+        process_doubleable_operator(l, token_redir_out, token_redir_append, ch);
     } else if (ch == '<') {
-        process_single_operator(l, token_less, ch);
+        process_single_operator(l, token_redir_in, ch);
     } else if (ch == '(') {
         process_single_operator(l, token_lparen, ch);
     } else if (ch == ')') {
@@ -187,7 +182,7 @@ void lexer_feed(lexer *l, char ch)
     }
 }
 
-const char* lexer_get_token_name(enum token_type type)
+const char* get_token_name(enum token_type type)
 {
     switch (type) {
     case token_word:
@@ -206,19 +201,19 @@ const char* lexer_get_token_name(enum token_type type)
         return "left parenthesis";
     case token_rparen:     
         return "right parenthesis";
-    case token_great:     
-        return "great";
-    case token_less:     
-        return "less";
-    case token_append:  
-        return "append";
+    case token_redir_in:     
+        return "redir in";
+    case token_redir_out:     
+        return "redir out";
+    case token_redir_append:  
+        return "redir append";
     }
     return NULL;
 }
 
-const char* lexer_status_message(enum lexer_status status)
+const char* lexer_error_msg(enum lexer_error err)
 {
-    switch (status) {
+    switch (err) {
     case lexer_ok:
         return "OK";
     case lexer_unclosed_quote:
@@ -229,8 +224,10 @@ const char* lexer_status_message(enum lexer_status status)
     return NULL;
 }
 
+#if 0
 void lexer_print_error(lexer *l, const char *program, FILE *f)
 {
     fprintf(f, "%s: line %d, char %d: %s\n",
             program, l->line_num, l->char_num, lexer_status_message(l->status));
 }
+#endif
