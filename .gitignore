@@ -1,1 +1,3 @@
-*.o shellma deps.mk
+*.o
+shellma
+deps.mk
