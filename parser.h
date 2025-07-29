@@ -4,28 +4,20 @@
 
 
 enum ast_type {
-    ast_type_subshell,
     ast_type_command,
-    ast_type_pipe,
     ast_type_redirect,
+    ast_type_subshell,
+    ast_type_pipe,
     ast_type_logical,   
-    ast_type_sequence,
+    ast_type_list,
     ast_type_background
 };
 
 typedef struct ast_node ast_node;
 
 typedef struct {
-    ast_node *child;
-} ast_subshell;
-
-typedef struct {
     char **argv;
 } ast_command;
-
-typedef struct {
-    ast_node *left, *right;
-} ast_pipe;
 
 typedef struct {
     enum token_type type;
@@ -34,15 +26,27 @@ typedef struct {
 } ast_redirect;
 
 typedef struct {
-    /* todo: rename */
-    enum token_type operator;
+    ast_node *child;
+} ast_subshell;
+
+typedef struct {
+    ast_node *left, *right;
+} ast_pipe;
+
+typedef struct {
+    enum token_type type;
     ast_node *left, *right;
 } ast_logical;
 
+typedef struct ast_list_item ast_list_item;
+struct ast_list_item {
+    ast_node *child; 
+    ast_list_item *next;
+};
+
 typedef struct {
-    int len, capacity;
-    ast_node **children;
-} ast_sequence;
+    ast_list_item *head, *tail;
+} ast_list;
 
 typedef struct {
     ast_node *child;
@@ -51,12 +55,12 @@ typedef struct {
 struct ast_node {
     enum ast_type type;
     union {
-        ast_subshell subshell;
         ast_command command;
-        ast_pipe pipe;
         ast_redirect redirect;
+        ast_subshell subshell;
+        ast_pipe pipe;
         ast_logical logical;
-        ast_sequence sequence;
+        ast_list list;
         ast_background background;
     };
 };

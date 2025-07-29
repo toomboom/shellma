@@ -3,8 +3,6 @@
 #include "parser.h"
 #include <assert.h>
 
-enum { sequence_init_capacity = 6 };
-
 static void init_ast(ast_node **pnode, enum ast_type type)
 {
     *pnode = calloc(1, sizeof(ast_node));
@@ -42,14 +40,14 @@ static void init_ast_background(ast_node **pnode, ast_node *child)
 }
 
 static void init_ast_logical(
-    ast_node **pnode, enum token_type operator,
+    ast_node **pnode, enum token_type type,
     ast_node *left, ast_node *right)
 {
     ast_logical *logic;
 
     init_ast(pnode, ast_type_logical);
     logic = &(*pnode)->logical;
-    logic->operator = operator;
+    logic->type = type;
     logic->left = left;
     logic->right = right;
 }
@@ -64,40 +62,41 @@ static void init_ast_pipe(ast_node **pnode, ast_node *left, ast_node *right)
     pipe->right = right;
 }
 
-/* todo: replace array with linked list */
-static void init_ast_sequence(ast_node **pnode, ast_node *child)
+static void init_ast_list(ast_node **plist)
 {
-    ast_sequence *seq;
-
-    init_ast(pnode, ast_type_sequence);
-    seq = &(*pnode)->sequence;
-    seq->capacity = sequence_init_capacity;
-    seq->children = malloc(sizeof(ast_node *) * sequence_init_capacity);
-    seq->children[0] = child;
-    seq->len = 1;
+    init_ast(plist, ast_type_list);
+    (*plist)->list.head = (*plist)->list.tail = NULL;
 }
 
-static void append_child(ast_node **pnode, ast_node *child)
+static void ast_list_push(ast_node **plist, ast_node *child)
 {
-    ast_sequence *seq;
-    if (*pnode == NULL) {
-        *pnode = child;
+    ast_list_item *tmp;
+    ast_list *list = &(*plist)->list;
+
+    tmp = malloc(sizeof(ast_list_item));
+    tmp->child = child;
+    tmp->next = NULL;
+    if (list->tail != NULL) {
+        list->tail->next = tmp;
+    } else {
+        list->head = tmp;
+    }
+    list->tail = tmp;
+}
+
+static void ast_list_lazy_push(ast_node **plist, ast_node *child)
+{
+    if (*plist == NULL) {
+        *plist = child;
         return;
     }
-    if ((*pnode)->type != ast_type_sequence) {
-        init_ast_sequence(pnode, *pnode);
-    }
+    if ((*plist)->type != ast_type_list) {
+        ast_node *tmp = *plist;
 
-    seq = &(*pnode)->sequence;
-    if (seq->len >= seq->capacity) {
-        seq->capacity *= 2;
-        seq->children = realloc(
-            seq->children,
-            sizeof(ast_node *) * seq->capacity
-        );
+        init_ast_list(plist);
+        ast_list_push(plist, tmp);
     }
-    seq->children[seq->len] = child;
-    seq->len++;
+    ast_list_push(plist, child);
 }
 
 int is_token_type(const token_item *token, int count, ...)
@@ -140,9 +139,32 @@ static void parse_command(ast_node **pnode, token_item **ptoken)
     init_ast_command(pnode, argv);
 }
 
+static int parse_redirection(ast_node **pnode, token_item **ptoken)
+{
+    enum token_type redir_type;
+    int have_redir;
+
+    parse_command(pnode, ptoken);
+    have_redir = is_token_type(
+        *ptoken, 3, token_redir_in,
+        token_redir_out, token_redir_append
+    );
+    if (!have_redir) {
+        return 0; 
+    }
+    redir_type = (*ptoken)->type;
+    *ptoken = (*ptoken)->next;
+    if (!is_token_type(*ptoken, 1, token_word)) {
+        return 1;
+    }
+    init_ast_redirection(pnode, redir_type, (*ptoken)->value, *pnode);
+    *ptoken = (*ptoken)->next;
+    return 0;
+}
+
 static int parse_background(ast_node **pchild, token_item **ptoken);
-static int parse_sequence(
-    ast_node **pseq, token_item **ptoken,
+static int parse_list(
+    ast_node **plist, token_item **ptoken,
     int (*parse_callback)(ast_node **, token_item **));
 
 static int parse_factor(ast_node **pnode, token_item **ptoken)
@@ -152,11 +174,10 @@ static int parse_factor(ast_node **pnode, token_item **ptoken)
     if (*ptoken == NULL) {
         return 1;
     } else if ((*ptoken)->type == token_word) {
-        parse_command(pnode, ptoken);
-        return 0;
+        return parse_redirection(pnode, ptoken);
     } else if ((*ptoken)->type == token_lparen) {
         *ptoken = (*ptoken)->next;
-        status = parse_sequence(pnode, ptoken, parse_background);
+        status = parse_list(pnode, ptoken, parse_background);
         if (status != 0 || !is_token_type(*ptoken, 1, token_rparen)) {
             return 1;
         }
@@ -188,7 +209,8 @@ static int parse_pipe(ast_node **pleft, token_item **ptoken)
     return 0;
 }
 
-static int parse_redirection(ast_node **pleft, token_item **ptoken)
+#if 0
+static int _parse_redirection(ast_node **pleft, token_item **ptoken)
 {
     enum token_type redir_type;
     int status, done;
@@ -210,44 +232,45 @@ static int parse_redirection(ast_node **pleft, token_item **ptoken)
     *ptoken = (*ptoken)->next;
     return 0;
 }
+#endif
 
 static int parse_logical(ast_node **pleft, token_item **ptoken)
 {
-    enum token_type operator;
+    enum token_type type;
     ast_node *right;
     int status;
 
-    status = parse_redirection(pleft, ptoken);
+    status = parse_pipe(pleft, ptoken);
     if (status != 0) {
         return status;
     }
     while (is_token_type(*ptoken, 2, token_and, token_or)) {
-        operator = (*ptoken)->type;
+        type = (*ptoken)->type;
         *ptoken = (*ptoken)->next;
-        status = parse_redirection(&right, ptoken);
+        status = parse_pipe(&right, ptoken);
         if (status != 0) {
             return status;
         }
-        init_ast_logical(pleft, operator, *pleft, right);
+        init_ast_logical(pleft, type, *pleft, right);
     }
     return 0;
 }
 
-static int parse_sequence(
-    ast_node **pseq, token_item **ptoken,
+static int parse_list(
+    ast_node **plist, token_item **ptoken,
     int (*parse_callback)(ast_node **, token_item **))
 {
     ast_node *child;
     int status;
 
-    *pseq = NULL;
+    *plist = NULL;
     do {
         status = parse_callback(&child, ptoken);
         if (status != 0) {
             return status;
         }
-        append_child(pseq, child);
-    } while (is_token_type(*ptoken, 1, token_word));
+        ast_list_lazy_push(plist, child);
+    } while (is_token_type(*ptoken, 2, token_word, token_lparen));
     return 0;
 }
 
@@ -255,7 +278,7 @@ static int parse_semicolon(ast_node **pchild, token_item **ptoken)
 {
     int status;
 
-    status = parse_sequence(pchild, ptoken, &parse_logical);
+    status = parse_list(pchild, ptoken, &parse_logical);
     if (status != 0) {
         return status;
     }
@@ -269,7 +292,7 @@ static int parse_background(ast_node **pchild, token_item **ptoken)
 {
     int status;
 
-    status = parse_sequence(pchild, ptoken, &parse_semicolon);
+    status = parse_list(pchild, ptoken, &parse_semicolon);
     if (status != 0) {
         return status;
     }
@@ -280,7 +303,6 @@ static int parse_background(ast_node **pchild, token_item **ptoken)
     return 0;
 }
 
-/* todo: const token_item * */
 enum parse_error parse(ast_node **ast, token_item *tokens, token_item **invalid)
 {
     int status;
@@ -289,191 +311,10 @@ enum parse_error parse(ast_node **ast, token_item *tokens, token_item **invalid)
     if (tokens == NULL) {
         return 0;
     }
-    status = parse_sequence(ast, &tokens, &parse_background);
+    status = parse_list(ast, &tokens, &parse_background);
     if (status != 0 || tokens != NULL) {
         *invalid = tokens; 
         return tokens == NULL ? unexpected_end : unexpected_token;
     } 
     return 0;
 }
-
-#if 0
-static int parse_helper(ast_node **pseq, token_item **ptoken)
-{
-    int status, count = 0;
-
-    /* while (is_token_type(*ptoken, 1, token_word)) { */
-    while (!is_sequence_end(*ptoken)) {
-        status = parse_sequence_step(pseq, ptoken, &parse_background, &count);
-        if (status != 0) {
-            return status;
-        }
-    }
-    return 0;
-}
-
-static int _parse_sequence(ast_node **pseq, token_item **ptoken)
-{
-    int status;
-
-    status = parse_sequence_step(pseq, ptoken, &parse_pipe, &count);
-    if (status != 0) {
-        return status;
-    }
-    while (is_token_type(*ptoken, 1, token_semicolon)) {
-        *ptoken = (*ptoken)->next;
-        if (is_sequence_end(*ptoken)) {
-            break;
-        }
-        status = parse_sequence_step(pseq, ptoken, &parse_pipe, &count);
-        if (status != 0) {
-            return status;
-        }
-    }
-    return 0;
-}
-static int parse_background(ast_node **pchild, token_item **ptoken)
-{
-    int status;
-
-    status = parse_sequence(pchild, ptoken);
-    if (status != 0) {
-        return status;
-    }
-    if (is_token_type(*ptoken, 1, token_bg)) {
-        *ptoken = (*ptoken)->next;
-        init_ast_background(pchild, *pchild);
-    }
-    return 0;
-}
-
-
-
-static int parse_sequence(ast_node **pseq, token_item **ptoken)
-{
-    ast_node *child;
-    int status;
-
-    *pseq = NULL;
-    do {
-        status = parse_pipe(&child, ptoken);
-        if (status != 0) {
-            return status;
-        }
-        append_child(pseq, child);
-        if (is_token_type(*ptoken, 1, token_semicolon)) {
-            *ptoken = (*ptoken)->next;
-        }
-    } while (is_token_type(*ptoken, 1, token_word));
-    return 0;
-}
-
-static int parse_backgrounds(ast_node **pseq, token_item **ptoken)
-{
-    ast_node *child;
-    int status;
-
-    *pseq = NULL;
-    do {
-        status = parse_sequence(&child, ptoken);
-        if (status != 0) {
-            return status;
-        }
-        if (is_token_type(*ptoken, 1, token_bg)) {
-            *ptoken = (*ptoken)->next;
-            init_ast_background(&child, child);
-        }
-        append_child(pseq, child);
-    } while (is_token_type(*ptoken, 1, token_word));
-
-
-    *pseq = NULL;
-    status = parse_sequence(&child, ptoken);
-    if (status != 0) {
-        return status;
-    }
-    while (is_token_type(*ptoken, 1, token_bg)) {
-        *ptoken = (*ptoken)->next;
-        init_ast_background(&child, child);
-        append_child(pseq, child);
-        if (*ptoken == NULL) {
-            break;
-        }
-    }
-    append_child(pseq, child);
-
-    return 0;
-}
-
-#if 0
-static int parse_sequence_step(
-    ast_node **pseq, token_item **ptoken,
-    int (*parse_callback)(ast_node **pseq, token_item **ptoken),
-    int *count
-){
-    int status;
-    ast_node *child;
-
-    if (*count == 0) {
-        (*count)++;
-        return parse_callback(pseq, ptoken);
-    }
-    if (*count == 1) {
-        init_ast_sequence(pseq, *pseq);
-    }
-    if (*count >= 1) {
-        status = parse_callback(&child, ptoken);
-        if (status != 0) {
-            return status;
-        }
-        add_child_to_sequence(pseq, child);
-    }
-    (*count)++;
-    return 0;
-}
-/* todo: rename */
-static void add_child_to_sequence(ast_node **pnode, ast_node *child)
-{
-    ast_sequence *seq = &(*pnode)->sequence;
-
-    if (seq->len >= seq->capacity) {
-        seq->capacity *= 2;
-        seq->children = realloc(
-            seq->children,
-            sizeof(ast_node *) * seq->capacity
-        );
-    }
-    seq->children[seq->len] = child;
-    seq->len++;
-}
-
-#if 0
-static int parse_redirection(ast_node **pleft, token_item **ptoken)
-{
-    enum token_type redir_type;
-    int status, done;
-
-    status = parse_factor(pleft, ptoken);
-    done = status != 0 || !is_token_type(
-        *ptoken, 3, token_redir_in,
-        token_redir_out, token_redir_append
-    );
-    if (done) {
-        return status;
-    }
-    redir_type = (*ptoken)->type;
-    *ptoken = (*ptoken)->next;
-    if (!is_token_type(*ptoken, 1, token_word)) {
-        return 1;
-    }
-    init_ast_redirection(pleft, redir_type, (*ptoken)->value, *pleft);
-    *ptoken = (*ptoken)->next;
-    return 0;
-}
-#endif
-
-#endif
-
-
-
-#endif
