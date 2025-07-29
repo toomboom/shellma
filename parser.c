@@ -84,6 +84,16 @@ static void ast_list_push(ast_node **plist, ast_node *child)
     list->tail = tmp;
 }
 
+static void ast_list_free(ast_node *node)
+{
+    ast_list_item *tmp, *head = node->list.head;    
+    while (head != NULL) {
+        tmp = head;
+        head = head->next;
+        free(tmp);
+    }
+}
+
 static void ast_list_lazy_push(ast_node **plist, ast_node *child)
 {
     if (*plist == NULL) {
@@ -317,4 +327,37 @@ enum parse_error parse(ast_node **ast, token_item *tokens, token_item **invalid)
         return tokens == NULL ? unexpected_end : unexpected_token;
     } 
     return 0;
+}
+
+void ast_free(ast_node *ast)
+{
+    if (ast == NULL) {
+        return;
+    }
+    switch (ast->type) {
+        case ast_type_command:
+            free(ast->command.argv);
+            break;
+        case ast_type_redirect:
+            ast_free(ast->redirect.child);
+            break;
+        case ast_type_subshell:
+            ast_free(ast->subshell.child);
+            break;
+        case ast_type_pipe:
+            ast_free(ast->pipe.left);
+            ast_free(ast->pipe.right);
+            break;
+        case ast_type_logical:   
+            ast_free(ast->logical.left);
+            ast_free(ast->logical.right);
+            break;
+        case ast_type_list:
+            ast_list_free(ast);
+            break;
+        case ast_type_background:
+            ast_free(ast->background.child);
+            break;
+    }
+    free(ast);
 }

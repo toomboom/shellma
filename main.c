@@ -6,7 +6,6 @@
 #endif
 
 
-
 int read_tokens(lexer *lex, token_item **ptoks, int *ch)
 {
     printf("> ");
@@ -46,6 +45,7 @@ int main(int argc, const char **argv)
         log_ast(stdout, ast);
 #endif
         tokens_free(tokens);
+        ast_free(ast);
         if (last_char == EOF) {
             break;
         }

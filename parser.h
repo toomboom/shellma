@@ -65,8 +65,8 @@ struct ast_node {
     };
 };
 
-/* todo ast_free */
 enum parse_error { unexpected_end = -1, unexpected_token = -2 };
 enum parse_error parse(ast_node **ast, token_item *tokens, token_item **invalid);
+void ast_free(ast_node *ast);
 
 #endif
