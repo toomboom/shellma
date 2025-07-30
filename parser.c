@@ -3,6 +3,7 @@
 #include "parser.h"
 #include <assert.h>
 
+
 static void init_ast(ast_node **pnode, enum ast_type type)
 {
     *pnode = calloc(1, sizeof(ast_node));
@@ -78,52 +79,38 @@ static void init_ast_pipe(ast_node **pnode, ast_node *left, ast_node *right)
     pipe->right = right;
 }
 
-static void init_ast_list(ast_node **plist)
+static void init_ast_list(ast_node **plist, child_item *children)
 {
     init_ast(plist, ast_type_list);
-    (*plist)->list.head = (*plist)->list.tail = NULL;
+    (*plist)->list.children = children;
 }
 
-/* todo: better use append postfix */
-static void ast_list_push(ast_node **plist, ast_node *child)
+static void child_list_append(
+    child_item **phead, child_item **ptail, ast_node *child)
 {
-    ast_list_item *tmp;
-    ast_list *list = &(*plist)->list;
+    child_item *tmp;
 
-    tmp = malloc(sizeof(ast_list_item));
+    tmp = malloc(sizeof(child_item));
     tmp->child = child;
     tmp->next = NULL;
-    if (list->tail != NULL) {
-        list->tail->next = tmp;
+    if (*ptail != NULL) {
+        (*ptail)->next = tmp;
     } else {
-        list->head = tmp;
+        *phead = tmp;
     }
-    list->tail = tmp;
+    *ptail = tmp;
 }
 
-static void ast_list_free(ast_node *node)
+void ast_free(ast_node *ast);
+
+static void child_list_free(child_item *head)
 {
-    ast_list_item *tmp, *head = node->list.head;    
     while (head != NULL) {
-        tmp = head;
+        child_item *tmp = head;
         head = head->next;
+        ast_free(tmp->child);
         free(tmp);
     }
-}
-
-static void ast_list_lazy_push(ast_node **plist, ast_node *child)
-{
-    if (*plist == NULL) {
-        *plist = child;
-        return;
-    }
-    if ((*plist)->type != ast_type_list) {
-        ast_node *tmp = *plist;
-
-        init_ast_list(plist);
-        ast_list_push(plist, tmp);
-    }
-    ast_list_push(plist, child);
 }
 
 int is_token_type(const token_item *token, int count, ...)
@@ -264,31 +251,6 @@ static int parse_pipe(ast_node **pleft, token_item **ptoken)
     return 0;
 }
 
-#if 0
-static int _parse_redirection(ast_node **pleft, token_item **ptoken)
-{
-    enum token_type redir_type;
-    int status, done;
-
-    status = parse_pipe(pleft, ptoken);
-    done = status != 0 || !is_token_type(
-        *ptoken, 3, token_redir_in,
-        token_redir_out, token_redir_append
-    );
-    if (done) {
-        return status;
-    }
-    redir_type = (*ptoken)->type;
-    *ptoken = (*ptoken)->next;
-    if (!is_token_type(*ptoken, 1, token_word)) {
-        return 1;
-    }
-    init_ast_redirection(pleft, redir_type, (*ptoken)->value, *pleft);
-    *ptoken = (*ptoken)->next;
-    return 0;
-}
-#endif
-
 static int parse_logical(ast_node **pleft, token_item **ptoken)
 {
     enum token_type type;
@@ -312,20 +274,27 @@ static int parse_logical(ast_node **pleft, token_item **ptoken)
 }
 
 static int parse_list(
-    ast_node **plist, token_item **ptoken,
+    ast_node **pnode, token_item **ptoken,
     int (*parse_callback)(ast_node **, token_item **))
 {
+    child_item *head = NULL, *tail = NULL;
     ast_node *child;
     int status;
 
-    *plist = NULL;
     do {
         status = parse_callback(&child, ptoken);
         if (status != 0) {
+            child_list_free(head);
             return status;
         }
-        ast_list_lazy_push(plist, child);
+        child_list_append(&head, &tail, child);
     } while (is_token_type(*ptoken, 2, token_word, token_lparen));
+    if (head == tail) {
+        *pnode = head->child;
+        free(head);
+    } else {
+        init_ast_list(pnode, head);
+    }
     return 0;
 }
 
@@ -396,7 +365,7 @@ void ast_free(ast_node *ast)
             ast_free(ast->logical.right);
             break;
         case ast_type_list:
-            ast_list_free(ast);
+            child_list_free(ast->list.children);
             break;
         case ast_type_background:
             ast_free(ast->background.child);

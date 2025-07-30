@@ -39,14 +39,13 @@ typedef struct {
     ast_node *left, *right;
 } ast_logical;
 
-typedef struct ast_list_item ast_list_item;
-struct ast_list_item {
+typedef struct child_item_tag {
     ast_node *child; 
-    ast_list_item *next;
-};
+    struct child_item_tag *next;
+} child_item;
 
 typedef struct {
-    ast_list_item *head, *tail;
+    child_item *children;
 } ast_list;
 
 typedef struct {

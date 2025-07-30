@@ -44,7 +44,7 @@ static void log_command(FILE *f, char * const *argv, const redir_item *redirs)
 }
 
 static void log_ast_helper(FILE *f, const ast_node *node, int depth);
-static void log_list(FILE *f, ast_list_item *head, int depth)
+static void log_list(FILE *f, const child_item *head, int depth)
 {
     fprintf(f, "list:\n");
     while (head != NULL) {
@@ -83,7 +83,7 @@ static void log_ast_helper(FILE *f, const ast_node *node, int depth) {
             log_ast_helper(f, node->pipe.right, depth);
             break;
         case ast_type_list:
-            log_list(f, node->list.head, depth);
+            log_list(f, node->list.children, depth);
             break;
     }
 }
