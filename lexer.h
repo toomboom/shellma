@@ -16,7 +16,6 @@ enum token_type {
     token_redir_in,     /* >  */
     token_redir_out,    /* <  */
     token_redir_append, /* >> */
-    /* todo: maybe just token_[in|out|append] */
 };
 
 typedef struct token_item token_item;
