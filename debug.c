@@ -20,7 +20,7 @@ static void put_tabs(FILE *f, int count)
     }
 }
 
-static void log_command(FILE *f, char * const *argv)
+static void log_command(FILE *f, char * const *argv, const redir_item *redirs)
 {
     int i;
 
@@ -28,7 +28,19 @@ static void log_command(FILE *f, char * const *argv)
     for (i = 0; argv[i] != NULL; i++) {
         fprintf(f, "%s%s", argv[i], argv[i+1] == NULL ? "" : ", ");
     }
-    fprintf(f, "]\n");
+    fprintf(f, "] ");
+    while (redirs != NULL) {
+        if (redirs->type == token_redir_in) {
+            fprintf(f, "%s %s %d", redirs->filename,
+                    get_token_name(redirs->type), redirs->fd);
+        } else {
+            fprintf(f, "%d %s %s", redirs->fd, get_token_name(redirs->type),
+                    redirs->filename);
+        }
+        fprintf(f, "%s", redirs->next == NULL ? "" : ", ");
+        redirs = redirs->next;
+    }
+    fputc('\n', f);
 }
 
 static void log_ast_helper(FILE *f, const ast_node *node, int depth);
@@ -54,12 +66,7 @@ static void log_ast_helper(FILE *f, const ast_node *node, int depth) {
             log_ast_helper(f, node->subshell.child, depth);
             break;
         case ast_type_command:
-            log_command(f, node->command.argv);
-            break;
-        case ast_type_redirect:
-            fprintf(f, "%s %s:\n", get_token_name(node->redirect.type),
-                    node->redirect.filename);
-            log_ast_helper(f, node->redirect.child, depth);
+            log_command(f, node->command.argv, node->command.redirs);
             break;
         case ast_type_logical:
             fprintf(f, "%s:\n", get_token_name(node->logical.type));

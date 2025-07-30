@@ -15,22 +15,38 @@ static void init_ast_subshell(ast_node **pnode, ast_node *child)
     (*pnode)->subshell.child = child;
 }
 
-static void init_ast_command(ast_node **pnode, char **argv)
+static void init_ast_command(ast_node **pnode, char **argv, redir_item *redirs)
 {
     init_ast(pnode, ast_type_command);
     (*pnode)->command.argv = argv;
+    (*pnode)->command.redirs = redirs;
 }
 
-static void init_ast_redirection(
-    ast_node **pnode, enum token_type type, char *filename, ast_node *child)
+static void redir_list_append(
+    redir_item **phead, redir_item **ptail,
+    enum token_type type, const char *filename, int fd)
 {
-    ast_redirect *redir;
+    redir_item *item;
 
-    init_ast(pnode, ast_type_redirect);
-    redir = &(*pnode)->redirect;
-    redir->type = type;
-    redir->filename = filename;
-    redir->child = child;
+    item = malloc(sizeof(redir_item));
+    item->type = type;
+    item->filename = filename;
+    item->fd = fd;
+    item->next = NULL;
+    if (*ptail != NULL) {
+        (*ptail)->next = item;
+    } else {
+        *phead = item;
+    }
+    *ptail = item;
+}
+
+static void redir_list_free(redir_item *head) {
+    while (head != NULL) {
+        redir_item *tmp = head;
+        head = head->next;
+        free(tmp);
+    }
 }
 
 static void init_ast_background(ast_node **pnode, ast_node *child)
@@ -68,6 +84,7 @@ static void init_ast_list(ast_node **plist)
     (*plist)->list.head = (*plist)->list.tail = NULL;
 }
 
+/* todo: better use append postfix */
 static void ast_list_push(ast_node **plist, ast_node *child)
 {
     ast_list_item *tmp;
@@ -129,10 +146,9 @@ int is_token_type(const token_item *token, int count, ...)
     return is_match;
 }
 
-static void parse_command(ast_node **pnode, token_item **ptoken)
+static void parse_argv(char ***pargv, token_item **ptoken)
 {
     token_item *cur;
-    char **argv;
     int argc = 0, i;
 
     cur = *ptoken;
@@ -140,35 +156,64 @@ static void parse_command(ast_node **pnode, token_item **ptoken)
         argc++;
         cur = cur->next;
     }
-    argv = malloc(sizeof(char *) * (argc + 1));
+    *pargv = malloc(sizeof(char *) * (argc + 1));
     for (i = 0; i < argc; i++) {
-        argv[i] = (*ptoken)->value;
+        (*pargv)[i] = (*ptoken)->value;
         *ptoken = (*ptoken)->next;
     }
-    argv[argc] = NULL;
-    init_ast_command(pnode, argv);
+    (*pargv)[argc] = NULL;
 }
 
-static int parse_redirection(ast_node **pnode, token_item **ptoken)
+/* todo: processing 3>, <4 and etc maybe will be added in future versions */
+static int get_redir_fd(enum token_type type)
 {
-    enum token_type redir_type;
-    int have_redir;
-
-    parse_command(pnode, ptoken);
-    have_redir = is_token_type(
-        *ptoken, 3, token_redir_in,
-        token_redir_out, token_redir_append
-    );
-    if (!have_redir) {
-        return 0; 
+    switch (type) {
+        case token_redir_in:
+            return 0;
+        case token_redir_out:
+        case token_redir_append:
+            return 1;
+        default:
+            return -1;
     }
-    redir_type = (*ptoken)->type;
+}
+
+static int parse_redir(
+    redir_item **phead, redir_item **ptail, token_item **ptoken)
+{
+    const char *filename;
+    enum token_type type;
+    int fd;
+
+    type = (*ptoken)->type;
     *ptoken = (*ptoken)->next;
     if (!is_token_type(*ptoken, 1, token_word)) {
         return 1;
     }
-    init_ast_redirection(pnode, redir_type, (*ptoken)->value, *pnode);
+    filename = (*ptoken)->value;
+    fd = get_redir_fd(type);
+    redir_list_append(phead, ptail, type, filename, fd);
     *ptoken = (*ptoken)->next;
+    return 0;
+}
+
+static int parse_command(ast_node **pnode, token_item **ptoken)
+{
+    redir_item *head = NULL, *tail = NULL;
+    char **argv;
+    int status;
+
+    parse_argv(&argv, ptoken);
+    while (is_token_type(*ptoken, 3,
+           token_redir_in, token_redir_out, token_redir_append)) {
+        status = parse_redir(&head, &tail, ptoken);
+        if (status != 0) {
+            free(argv);
+            redir_list_free(head);
+            return 1;
+        }
+    }
+    init_ast_command(pnode, argv, head);
     return 0;
 }
 
@@ -184,7 +229,7 @@ static int parse_factor(ast_node **pnode, token_item **ptoken)
     if (*ptoken == NULL) {
         return 1;
     } else if ((*ptoken)->type == token_word) {
-        return parse_redirection(pnode, ptoken);
+        return parse_command(pnode, ptoken);
     } else if ((*ptoken)->type == token_lparen) {
         *ptoken = (*ptoken)->next;
         status = parse_list(pnode, ptoken, parse_background);
@@ -336,10 +381,8 @@ void ast_free(ast_node *ast)
     }
     switch (ast->type) {
         case ast_type_command:
+            redir_list_free(ast->command.redirs);
             free(ast->command.argv);
-            break;
-        case ast_type_redirect:
-            ast_free(ast->redirect.child);
             break;
         case ast_type_subshell:
             ast_free(ast->subshell.child);
