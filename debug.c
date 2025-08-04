@@ -2,11 +2,11 @@
 #include "strbuf.h"
 
 
-void log_tokens(FILE *file, const token_item *token)
+void log_tokens(FILE *f, const token_item *token)
 {
-    fprintf(file, "LOG: TOKENS:\n");
+    fprintf(f, "LOG: TOKENS:\n");
     while (token != NULL) {
-        fprintf(file, "([%s] %s)%c", token->value, get_token_name(token->type),
+        fprintf(f, "([%s] %s)%c", token->value, get_token_name(token->type),
                 token->next == NULL ? '\n' : ' ');
         token = token->next;
     }
@@ -20,15 +20,20 @@ static void put_tabs(FILE *f, int count)
     }
 }
 
-static void log_command(FILE *f, char * const *argv, const redir_item *redirs)
+static void log_ast_list(FILE *f, const ast_list_node *head, int depth);
+
+static void log_command(FILE *f, const ast_command *cmd)
 {
-    int i;
+    redir_entry *redirs = cmd->redirs;
+    char **argv = cmd->argv;
 
     fprintf(f, "command: [");
-    for (i = 0; argv[i] != NULL; i++) {
-        fprintf(f, "%s%s", argv[i], argv[i+1] == NULL ? "" : ", ");
+    while (*argv != NULL) {
+        fprintf(f, "%s%s", *argv, argv[1] == NULL ? "" : ", ");
+        argv++;
     }
     fprintf(f, "] ");
+
     while (redirs != NULL) {
         if (redirs->type == token_redir_in) {
             fprintf(f, "%s %s %d", redirs->filename,
@@ -43,17 +48,8 @@ static void log_command(FILE *f, char * const *argv, const redir_item *redirs)
     fputc('\n', f);
 }
 
-static void log_ast_helper(FILE *f, const ast_node *node, int depth);
-static void log_list(FILE *f, const child_item *head, int depth)
+static void log_ast_node(FILE *f, const ast_node *node, int depth)
 {
-    fprintf(f, "list:\n");
-    while (head != NULL) {
-        log_ast_helper(f, head->child, depth);
-        head = head->next;
-    }
-}
-
-static void log_ast_helper(FILE *f, const ast_node *node, int depth) {
     put_tabs(f, depth);
     if (node == NULL) {
         fprintf(f, "<empty>\n");
@@ -61,35 +57,39 @@ static void log_ast_helper(FILE *f, const ast_node *node, int depth) {
     }
     depth++;
     switch (node->type) {
-        case ast_type_subshell:
-            fprintf(f, "subshell:\n");
-            log_ast_helper(f, node->subshell.child, depth);
-            break;
-        case ast_type_command:
-            log_command(f, node->command.argv, node->command.redirs);
-            break;
-        case ast_type_logical:
-            fprintf(f, "%s:\n", get_token_name(node->logical.type));
-            log_ast_helper(f, node->logical.left, depth);
-            log_ast_helper(f, node->logical.right, depth);
-            break;
-        case ast_type_background:
-            fprintf(f, "%s:\n", get_token_name(token_bg));
-            log_ast_helper(f, node->background.child, depth);
-            break;
-        case ast_type_pipe:
-            fprintf(f, "%s:\n", get_token_name(token_pipe));
-            log_ast_helper(f, node->pipe.left, depth);
-            log_ast_helper(f, node->pipe.right, depth);
-            break;
-        case ast_type_list:
-            log_list(f, node->list.children, depth);
-            break;
+    case ast_type_command:
+        log_command(f, &node->command);
+        break;
+    case ast_type_subshell:
+        fprintf(f, "subshell:\n");
+        log_ast_list(f, node->subshell.statements, depth);
+        break;
+    case ast_type_pipeline:
+        fprintf(f, "pipeline:\n");
+        log_ast_list(f, node->pipeline.chain, depth);
+        break;
+    case ast_type_logical:
+        fprintf(f, "%s:\n", get_token_name(node->logical.type));
+        log_ast_node(f, node->logical.left, depth);
+        log_ast_node(f, node->logical.right, depth);
+        break;
+    case ast_type_background:
+        fprintf(f, "background:\n");
+        log_ast_node(f, node->background.child, depth);
+        break;
     }
 }
 
-void log_ast(FILE *f, const ast_node *ast)
+static void log_ast_list(FILE *f, const ast_list_node *head, int depth)
+{
+    while (head != NULL) {
+        log_ast_node(f, head->node, depth);
+        head = head->next;
+    }
+}
+
+void log_ast(FILE *f, const ast_list_node *list)
 {
     fprintf(f, "LOG: AST:\n");
-    log_ast_helper(f, ast, 0);
+    log_ast_list(f, list, 0);
 }

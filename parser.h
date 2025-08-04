@@ -6,9 +6,8 @@
 enum ast_type {
     ast_type_command,
     ast_type_subshell,
-    ast_type_pipe,
+    ast_type_pipeline,
     ast_type_logical,   
-    ast_type_list,
     ast_type_background
 };
 
@@ -19,34 +18,30 @@ typedef struct redir_item_tag {
     const char *filename;
     int fd;
     struct redir_item_tag *next;
-} redir_item;
+} redir_entry;
 
 typedef struct {
-    redir_item *redirs;
+    redir_entry *redirs;
     char **argv;
 } ast_command;
 
-typedef struct {
-    ast_node *child;
-} ast_subshell;
+typedef struct child_item_tag {
+    ast_node *node;
+    struct child_item_tag *next;
+} ast_list_node;
 
 typedef struct {
-    ast_node *left, *right;
-} ast_pipe;
+    ast_list_node *statements;
+} ast_subshell;
 
 typedef struct {
     enum token_type type;
     ast_node *left, *right;
 } ast_logical;
 
-typedef struct child_item_tag {
-    ast_node *child; 
-    struct child_item_tag *next;
-} child_item;
-
 typedef struct {
-    child_item *children;
-} ast_list;
+    ast_list_node *chain;
+} ast_pipeline;
 
 typedef struct {
     ast_node *child;
@@ -57,15 +52,13 @@ struct ast_node {
     union {
         ast_command command;
         ast_subshell subshell;
-        ast_pipe pipe;
         ast_logical logical;
-        ast_list list;
+        ast_pipeline pipeline;
         ast_background background;
     };
 };
 
-enum parse_error { unexpected_end = -1, unexpected_token = -2 };
-enum parse_error parse(ast_node **ast, token_item *tokens, token_item **invalid);
-void ast_free(ast_node *ast);
+int parse(ast_list_node **plist, token_item *tokens, token_item **invalid);
+void ast_list_free(ast_list_node *head);
 
 #endif

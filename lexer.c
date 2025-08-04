@@ -224,10 +224,7 @@ const char* lexer_error_msg(enum lexer_error err)
     return NULL;
 }
 
-#if 0
-void lexer_print_error(lexer *l, const char *program, FILE *f)
+int token_have_type(const token_item *token, int types)
 {
-    fprintf(f, "%s: line %d, char %d: %s\n",
-            program, l->line_num, l->char_num, lexer_status_message(l->status));
+    return token != NULL && types & token->type;
 }
-#endif

@@ -1,35 +1,18 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include "parser.h"
-#include <assert.h>
 
 
-static void init_ast(ast_node **pnode, enum ast_type type)
-{
-    *pnode = calloc(1, sizeof(ast_node));
-    (*pnode)->type = type;
-}
-
-static void init_ast_subshell(ast_node **pnode, ast_node *child)
-{
-    init_ast(pnode, ast_type_subshell);
-    (*pnode)->subshell.child = child;
-}
-
-static void init_ast_command(ast_node **pnode, char **argv, redir_item *redirs)
-{
-    init_ast(pnode, ast_type_command);
-    (*pnode)->command.argv = argv;
-    (*pnode)->command.redirs = redirs;
-}
+static void ast_node_free(ast_node *node);
+static int parse_statements(ast_list_node **phead, token_item **pcur);
 
 static void redir_list_append(
-    redir_item **phead, redir_item **ptail,
+    redir_entry **phead, redir_entry **ptail,
     enum token_type type, const char *filename, int fd)
 {
-    redir_item *item;
+    redir_entry *item;
 
-    item = malloc(sizeof(redir_item));
+    item = malloc(sizeof(redir_entry));
     item->type = type;
     item->filename = filename;
     item->fd = fd;
@@ -42,12 +25,57 @@ static void redir_list_append(
     *ptail = item;
 }
 
-static void redir_list_free(redir_item *head) {
+static void redir_list_free(redir_entry *head) {
     while (head != NULL) {
-        redir_item *tmp = head;
+        redir_entry *tmp = head;
         head = head->next;
         free(tmp);
     }
+}
+
+static void ast_list_append(
+    ast_list_node **phead, ast_list_node **ptail, ast_node *node)
+{
+    ast_list_node *tmp;
+
+    tmp = malloc(sizeof(ast_list_node));
+    tmp->node = node;
+    tmp->next = NULL;
+    if (*ptail != NULL) {
+        (*ptail)->next = tmp;
+    } else {
+        *phead = tmp;
+    }
+    *ptail = tmp;
+}
+
+void ast_list_free(ast_list_node *head)
+{
+    while (head != NULL) {
+        ast_list_node *tmp = head;
+        head = head->next;
+        ast_node_free(tmp->node);
+        free(tmp);
+    }
+}
+
+static void init_ast(ast_node **pnode, enum ast_type type)
+{
+    *pnode = calloc(1, sizeof(ast_node));
+    (*pnode)->type = type;
+}
+
+static void init_ast_command(ast_node **pnode, char **argv, redir_entry *redirs)
+{
+    init_ast(pnode, ast_type_command);
+    (*pnode)->command.argv = argv;
+    (*pnode)->command.redirs = redirs;
+}
+
+static void init_ast_subshell(ast_node **pnode, ast_list_node *stmts)
+{
+    init_ast(pnode, ast_type_subshell);
+    (*pnode)->subshell.statements = stmts;
 }
 
 static void init_ast_background(ast_node **pnode, ast_node *child)
@@ -69,84 +97,50 @@ static void init_ast_logical(
     logic->right = right;
 }
 
-static void init_ast_pipe(ast_node **pnode, ast_node *left, ast_node *right)
+static void init_ast_pipeline(ast_node **pnode, ast_list_node *chain)
 {
-    ast_pipe *pipe;
-
-    init_ast(pnode, ast_type_pipe);
-    pipe = &(*pnode)->pipe;
-    pipe->left = left;
-    pipe->right = right;
+    init_ast(pnode, ast_type_pipeline);
+    (*pnode)->pipeline.chain = chain;
 }
 
-static void init_ast_list(ast_node **plist, child_item *children)
+static void ast_node_free(ast_node *node)
 {
-    init_ast(plist, ast_type_list);
-    (*plist)->list.children = children;
-}
-
-static void child_list_append(
-    child_item **phead, child_item **ptail, ast_node *child)
-{
-    child_item *tmp;
-
-    tmp = malloc(sizeof(child_item));
-    tmp->child = child;
-    tmp->next = NULL;
-    if (*ptail != NULL) {
-        (*ptail)->next = tmp;
-    } else {
-        *phead = tmp;
+    switch (node->type) {
+    case ast_type_command:
+        redir_list_free(node->command.redirs);
+        free(node->command.argv);
+        break;
+    case ast_type_subshell:
+        ast_list_free(node->subshell.statements);
+        break;
+    case ast_type_logical:   
+        ast_node_free(node->logical.left);
+        ast_node_free(node->logical.right);
+        break;
+    case ast_type_pipeline:
+        ast_list_free(node->pipeline.chain);
+        break;
+    case ast_type_background:
+        ast_node_free(node->background.child);
+        break;
     }
-    *ptail = tmp;
+    free(node);
 }
 
-void ast_free(ast_node *ast);
-
-static void child_list_free(child_item *head)
+static void parse_argv(char ***pargv, token_item **pcur)
 {
-    while (head != NULL) {
-        child_item *tmp = head;
-        head = head->next;
-        ast_free(tmp->child);
-        free(tmp);
-    }
-}
-
-int is_token_type(const token_item *token, int count, ...)
-{
-    va_list args;
-    int is_match = 0;
-
-    if (token == NULL) {
-        return 0;
-    }
-    va_start(args, count);
-    while (count > 0) {
-        if (token->type == va_arg(args, enum token_type)) {
-            is_match = 1;
-            break;
-        }
-        count--;
-    }
-    va_end(args);
-    return is_match;
-}
-
-static void parse_argv(char ***pargv, token_item **ptoken)
-{
-    token_item *cur;
+    token_item *tmp;
     int argc = 0, i;
 
-    cur = *ptoken;
-    while (cur != NULL && cur->type == token_word) {
+    tmp = *pcur;
+    while (token_have_type(tmp, token_word)) {
         argc++;
-        cur = cur->next;
+        tmp = tmp->next;
     }
     *pargv = malloc(sizeof(char *) * (argc + 1));
     for (i = 0; i < argc; i++) {
-        (*pargv)[i] = (*ptoken)->value;
-        *ptoken = (*ptoken)->next;
+        (*pargv)[i] = (*pcur)->value;
+        *pcur = (*pcur)->next;
     }
     (*pargv)[argc] = NULL;
 }
@@ -166,105 +160,107 @@ static int get_redir_fd(enum token_type type)
 }
 
 static int parse_redir(
-    redir_item **phead, redir_item **ptail, token_item **ptoken)
+    redir_entry **phead, redir_entry **ptail, token_item **pcur)
 {
     const char *filename;
     enum token_type type;
     int fd;
 
-    type = (*ptoken)->type;
-    *ptoken = (*ptoken)->next;
-    if (!is_token_type(*ptoken, 1, token_word)) {
-        return 1;
+    type = (*pcur)->type;
+    *pcur = (*pcur)->next;
+    if (!token_have_type(*pcur, token_word)) {
+        return -1;
     }
-    filename = (*ptoken)->value;
+    filename = (*pcur)->value;
     fd = get_redir_fd(type);
     redir_list_append(phead, ptail, type, filename, fd);
-    *ptoken = (*ptoken)->next;
+    *pcur = (*pcur)->next;
     return 0;
 }
 
-static int parse_command(ast_node **pnode, token_item **ptoken)
+static int parse_command(ast_node **pnode, token_item **pcur)
 {
-    redir_item *head = NULL, *tail = NULL;
+    redir_entry *head = NULL, *tail = NULL;
     char **argv;
     int status;
 
-    parse_argv(&argv, ptoken);
-    while (is_token_type(*ptoken, 3,
-           token_redir_in, token_redir_out, token_redir_append)) {
-        status = parse_redir(&head, &tail, ptoken);
+    parse_argv(&argv, pcur);
+    while (token_have_type(*pcur,
+           token_redir_in|token_redir_out|token_redir_append)) {
+        status = parse_redir(&head, &tail, pcur);
         if (status != 0) {
             free(argv);
             redir_list_free(head);
-            return 1;
+            return status;
         }
     }
     init_ast_command(pnode, argv, head);
     return 0;
 }
 
-static int parse_background(ast_node **pchild, token_item **ptoken);
-static int parse_list(
-    ast_node **plist, token_item **ptoken,
-    int (*parse_callback)(ast_node **, token_item **));
-
-static int parse_factor(ast_node **pnode, token_item **ptoken)
+static int parse_factor(ast_node **pnode, token_item **pcur)
 {
     int status;
 
-    if (*ptoken == NULL) {
-        return 1;
-    } else if ((*ptoken)->type == token_word) {
-        return parse_command(pnode, ptoken);
-    } else if ((*ptoken)->type == token_lparen) {
-        *ptoken = (*ptoken)->next;
-        status = parse_list(pnode, ptoken, parse_background);
-        if (status != 0 || !is_token_type(*ptoken, 1, token_rparen)) {
-            return 1;
-        }
-        *ptoken = (*ptoken)->next;
-        init_ast_subshell(pnode, *pnode);
-        return 0;
-    } else {
-        return 1; 
-    }
-}
+    if (token_have_type(*pcur, token_word)) {
+        return parse_command(pnode, pcur);
+    } else if (token_have_type(*pcur, token_lparen)) {
+        ast_list_node *stmts;
 
-static int parse_pipe(ast_node **pleft, token_item **ptoken)
-{
-    ast_node *right;
-    int status;
-
-    status = parse_factor(pleft, ptoken);
-    if (status != 0) {
-        return status;
-    }
-    while (is_token_type(*ptoken, 1, token_pipe)) {
-        *ptoken = (*ptoken)->next;
-        status = parse_factor(&right, ptoken);
+        *pcur = (*pcur)->next;
+        status = parse_statements(&stmts, pcur);
         if (status != 0) {
             return status;
         }
-        init_ast_pipe(pleft, *pleft, right);
+        if (!token_have_type(*pcur, token_rparen)) {
+            ast_list_free(stmts);
+            return -1;
+        }
+        *pcur = (*pcur)->next;
+        init_ast_subshell(pnode, stmts);
+        return 0;
+    } else {
+        return -1; 
     }
+}
+
+static int parse_pipeline(ast_node **pnode, token_item **pcur)
+{
+    ast_list_node *head = NULL, *tail = NULL;
+    int status;
+
+    status = parse_factor(pnode, pcur);
+    if (status != 0 || !token_have_type(*pcur, token_pipe)) {
+        return status;
+    }
+    ast_list_append(&head, &tail, *pnode);
+    while (token_have_type(*pcur, token_pipe)) {
+        *pcur = (*pcur)->next;
+        status = parse_factor(pnode, pcur);
+        if (status != 0) {
+            ast_list_free(head);
+            return status;
+        }
+        ast_list_append(&head, &tail, *pnode);
+    }
+    init_ast_pipeline(pnode, head);
     return 0;
 }
 
-static int parse_logical(ast_node **pleft, token_item **ptoken)
+static int parse_logical(ast_node **pleft, token_item **pcur)
 {
-    enum token_type type;
     ast_node *right;
     int status;
 
-    status = parse_pipe(pleft, ptoken);
+    status = parse_pipeline(pleft, pcur);
     if (status != 0) {
         return status;
     }
-    while (is_token_type(*ptoken, 2, token_and, token_or)) {
-        type = (*ptoken)->type;
-        *ptoken = (*ptoken)->next;
-        status = parse_pipe(&right, ptoken);
+    while (token_have_type(*pcur, token_and | token_or)) {
+        enum token_type type = (*pcur)->type;
+
+        *pcur = (*pcur)->next;
+        status = parse_pipeline(&right, pcur);
         if (status != 0) {
             return status;
         }
@@ -273,103 +269,47 @@ static int parse_logical(ast_node **pleft, token_item **ptoken)
     return 0;
 }
 
-static int parse_list(
-    ast_node **pnode, token_item **ptoken,
-    int (*parse_callback)(ast_node **, token_item **))
+static int parse_statements(ast_list_node **phead, token_item **pcur)
 {
-    child_item *head = NULL, *tail = NULL;
-    ast_node *child;
+    ast_list_node *tail = NULL;
+    ast_node *node;
     int status;
 
+    *phead = NULL;
     do {
-        status = parse_callback(&child, ptoken);
+        status = parse_logical(&node, pcur);
         if (status != 0) {
-            child_list_free(head);
+            ast_list_free(*phead);
             return status;
         }
-        child_list_append(&head, &tail, child);
-    } while (is_token_type(*ptoken, 2, token_word, token_lparen));
-    if (head == tail) {
-        *pnode = head->child;
-        free(head);
-    } else {
-        init_ast_list(pnode, head);
-    }
+
+        if (token_have_type(*pcur, token_bg)) {
+            init_ast_background(&node, node);
+        }
+        if (token_have_type(*pcur, token_bg | token_semicolon)) {
+            *pcur = (*pcur)->next;
+        }
+        ast_list_append(phead, &tail, node);
+    } while (token_have_type(*pcur, token_word));
     return 0;
 }
 
-static int parse_semicolon(ast_node **pchild, token_item **ptoken)
+int parse(ast_list_node **result, token_item *tokens, token_item **err_pos)
 {
     int status;
 
-    status = parse_list(pchild, ptoken, &parse_logical);
-    if (status != 0) {
-        return status;
-    }
-    if (is_token_type(*ptoken, 1, token_semicolon)) {
-        *ptoken = (*ptoken)->next;
-    }
-    return 0;
-}
-
-static int parse_background(ast_node **pchild, token_item **ptoken)
-{
-    int status;
-
-    status = parse_list(pchild, ptoken, &parse_semicolon);
-    if (status != 0) {
-        return status;
-    }
-    if (is_token_type(*ptoken, 1, token_bg)) {
-        *ptoken = (*ptoken)->next;
-        init_ast_background(pchild, *pchild);
-    }
-    return 0;
-}
-
-enum parse_error parse(ast_node **ast, token_item *tokens, token_item **invalid)
-{
-    int status;
-
-    *ast = NULL;
+    *result = NULL;
     if (tokens == NULL) {
         return 0;
     }
-    status = parse_list(ast, &tokens, &parse_background);
-    if (status != 0 || tokens != NULL) {
-        *invalid = tokens; 
-        return tokens == NULL ? unexpected_end : unexpected_token;
-    } 
-    return 0;
-}
-
-void ast_free(ast_node *ast)
-{
-    if (ast == NULL) {
-        return;
+    status = parse_statements(result, &tokens);
+    if (status == 0 && tokens == NULL) {
+        return 0;
     }
-    switch (ast->type) {
-        case ast_type_command:
-            redir_list_free(ast->command.redirs);
-            free(ast->command.argv);
-            break;
-        case ast_type_subshell:
-            ast_free(ast->subshell.child);
-            break;
-        case ast_type_pipe:
-            ast_free(ast->pipe.left);
-            ast_free(ast->pipe.right);
-            break;
-        case ast_type_logical:   
-            ast_free(ast->logical.left);
-            ast_free(ast->logical.right);
-            break;
-        case ast_type_list:
-            child_list_free(ast->list.children);
-            break;
-        case ast_type_background:
-            ast_free(ast->background.child);
-            break;
+    *err_pos = tokens; 
+    if (status == 0) {
+        ast_list_free(*result);
     }
-    free(ast);
+    *result = NULL;
+    return -1;
 }
