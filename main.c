@@ -1,6 +1,9 @@
 #include <stdlib.h>
+#include <errno.h>
+#include "wrappers.h"
 #include "lexer.h"
 #include "parser.h"
+#include "executor.h"
 #ifdef DEBUG
 #include "debug.h"
 #endif
@@ -10,9 +13,16 @@ int read_tokens(lexer *lex, token_item **ptoks, int *ch)
 {
     printf("> ");
     lexer_start(lex);
-    while ((*ch = fgetc(stdin)) != EOF) {
-        lexer_feed(lex, *ch);
-        if (lex->eol) {
+    /* todo: обрабоать ситуацию прихода сигнала */
+    for (;;) {
+        errno = 0;
+        *ch = fgetc(stdin);
+        if (*ch != EOF) {
+            lexer_feed(lex, *ch);
+            if (lex->eol) {
+                break;
+            }
+        } else if (errno == 0) {
             break;
         }
     }
@@ -22,7 +32,7 @@ int read_tokens(lexer *lex, token_item **ptoks, int *ch)
 int main(int argc, const char **argv)
 {
     lexer lex;
-    ast_list_node *list;
+    ast_list_node *statements;
     token_item *err_pos, *tokens;
     int status, last_char = 0;
 
@@ -34,19 +44,22 @@ int main(int argc, const char **argv)
             goto cleanup;
         }
 
-        status = parse(&list, tokens, &err_pos);
+        status = parse(&statements, tokens, &err_pos);
         if (status != 0) {
             fprintf(stderr, "syntax error near %s\n",
                     err_pos == NULL ? "end of line" : err_pos->value);
             goto cleanup;
         }
+        status = execute(statements);
+        printf("Status=%d\n", status);
 #ifdef DEBUG
+        putchar('\n');
         log_tokens(stdout, tokens);
-        log_ast(stdout, list);
+        log_ast(stdout, statements);
 #endif
 cleanup:
         tokens_free(tokens);
-        ast_list_free(list);
+        ast_list_free(statements);
         if (last_char == EOF) {
             break;
         }
