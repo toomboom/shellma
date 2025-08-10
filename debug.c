@@ -6,8 +6,15 @@ void log_tokens(FILE *f, const token_item *token)
 {
     fprintf(f, "LOG: TOKENS:\n");
     while (token != NULL) {
-        fprintf(f, "([%s] %s)%c", token->value, get_token_name(token->type),
-                token->next == NULL ? '\n' : ' ');
+        if (is_token_type(token, token_word)) {
+            fprintf(f, "(%s: %s)", token_name(token->type),
+                    token->str_val);
+        } else if (is_token_redir(token)) {
+            fprintf(f, "(%d%s)", token->int_val, token_name(token->type));
+        } else {
+            fprintf(f, "(%s)", token_name(token->type));
+        }
+        fputc(token->next == NULL ? '\n' : ' ', f);
         token = token->next;
     }
 }
@@ -24,28 +31,23 @@ static void log_ast_list(FILE *f, const ast_list_node *head, int depth);
 
 static void log_command(FILE *f, const ast_command *cmd)
 {
-    redir_entry *redirs = cmd->redirs;
     char **argv = cmd->argv;
 
     fprintf(f, "command: [");
     while (*argv != NULL) {
-        fprintf(f, "%s%s", *argv, argv[1] == NULL ? "" : ", ");
+        fprintf(f, "%s%s", *argv, argv[1] == NULL ? "]\n" : ", ");
         argv++;
     }
-    fprintf(f, "] ");
+}
 
-    while (redirs != NULL) {
-        if (redirs->type == token_redir_in) {
-            fprintf(f, "%s %s %d", redirs->filename,
-                    get_token_name(redirs->type), redirs->fd);
-        } else {
-            fprintf(f, "%d %s %s", redirs->fd, get_token_name(redirs->type),
-                    redirs->filename);
-        }
-        fprintf(f, "%s", redirs->next == NULL ? "" : ", ");
-        redirs = redirs->next;
+static void log_redirection(FILE *f, const redir_entry *entries)
+{
+    fprintf(f, "redirection: [");
+    while (entries != NULL) {
+        fprintf(f, "%d%s %s%s", entries->target_fd, token_name(entries->type),
+                entries->filename, entries->next == NULL ? "]\n" : ", ");
+        entries = entries->next;
     }
-    fputc('\n', f);
 }
 
 static void log_ast_node(FILE *f, const ast_node *node, int depth)
@@ -64,12 +66,16 @@ static void log_ast_node(FILE *f, const ast_node *node, int depth)
         fprintf(f, "subshell:\n");
         log_ast_list(f, node->subshell.statements, depth);
         break;
+    case ast_type_redirection:
+        log_redirection(f, node->redirection.entries);
+        log_ast_node(f, node->redirection.child, depth);
+        break;
     case ast_type_pipeline:
         fprintf(f, "pipeline:\n");
         log_ast_list(f, node->pipeline.chain, depth);
         break;
     case ast_type_logical:
-        fprintf(f, "%s:\n", get_token_name(node->logical.type));
+        fprintf(f, "%s:\n", token_name(node->logical.type));
         log_ast_node(f, node->logical.left, depth);
         log_ast_node(f, node->logical.right, depth);
         break;

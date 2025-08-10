@@ -1,4 +1,4 @@
-SRC = main.c strbuf.c lexer.c parser.c debug.c executor.c wrappers.c
+SRC = main.c strbuf.c debug.c lexer.c parser.c executor.c wrappers.c
 OBJ = $(SRC:.c=.o)
 CFLAGS = -ggdb -Wall -pedantic -DDEBUG
 

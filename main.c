@@ -13,7 +13,6 @@ int read_tokens(lexer *lex, token_item **ptoks, int *ch)
 {
     printf("> ");
     lexer_start(lex);
-    /* todo: обрабоать ситуацию прихода сигнала */
     for (;;) {
         errno = 0;
         *ch = fgetc(stdin);
@@ -47,10 +46,10 @@ int main(int argc, const char **argv)
         status = parse(&statements, tokens, &err_pos);
         if (status != 0) {
             fprintf(stderr, "syntax error near %s\n",
-                    err_pos == NULL ? "end of line" : err_pos->value);
+                    err_pos == NULL ? "end of line" : token_name(err_pos->type));
             goto cleanup;
         }
-        status = execute(statements);
+        status = execute(statements); 
         printf("Status=%d\n", status);
 #ifdef DEBUG
         putchar('\n');

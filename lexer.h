@@ -13,14 +13,17 @@ enum token_type {
     token_semicolon     = 1<<5, /* ;  */
     token_lparen        = 1<<6, /* (  */
     token_rparen        = 1<<7, /* )  */
-    token_redir_in      = 1<<8, /* >  */
-    token_redir_out     = 1<<9, /* <  */
+    token_redir_in      = 1<<8, /* <  */
+    token_redir_out     = 1<<9, /* >  */
     token_redir_append  = 1<<10 /* >> */
 };
 
 typedef struct token_item token_item;
 struct token_item {
-    char *value;
+    union {
+        char *str_val;
+        int int_val;
+    };
     enum token_type type;
     token_item *next;
 };
@@ -32,7 +35,8 @@ enum lexer_error {
 
 typedef struct {
     token_item *head, *tail;
-    strbuf cur;
+    strbuf str_val;
+    int int_val;
     enum token_type type;
     int have_token, eol;
     int in_squote, in_dquote, in_escape;
@@ -45,9 +49,10 @@ void lexer_free(lexer *l);
 void lexer_start(lexer *l);
 enum lexer_error lexer_end(lexer *l, token_item **phead);
 void lexer_feed(lexer *l, char ch);
-const char* get_token_name(enum token_type type);
+const char* token_name(enum token_type type);
 const char* lexer_error_msg(enum lexer_error status);
-int token_have_type(const token_item *token, int types);
+int is_token_type(const token_item *token, int types);
+int is_token_redir(const token_item *token);
 
 
 #endif

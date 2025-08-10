@@ -6,6 +6,7 @@
 enum ast_type {
     ast_type_command,
     ast_type_subshell,
+    ast_type_redirection,
     ast_type_pipeline,
     ast_type_logical,   
     ast_type_background
@@ -13,15 +14,7 @@ enum ast_type {
 
 typedef struct ast_node ast_node;
 
-typedef struct redir_item_tag {
-    enum token_type type;
-    const char *filename;
-    int fd;
-    struct redir_item_tag *next;
-} redir_entry;
-
 typedef struct {
-    redir_entry *redirs;
     char **argv;
 } ast_command;
 
@@ -33,6 +26,24 @@ typedef struct child_item_tag {
 typedef struct {
     ast_list_node *statements;
 } ast_subshell;
+
+enum redir_type {
+    redir_in = token_redir_in,
+    redir_out = token_redir_out,
+    redir_append = token_redir_append
+};
+
+typedef struct redir_item_tag {
+    enum redir_type type;
+    int src_fd, target_fd;
+    const char *filename;
+    struct redir_item_tag *next;
+} redir_entry;
+
+typedef struct {
+    redir_entry *entries;
+    ast_node *child;
+} ast_redirection;
 
 typedef struct {
     enum token_type type;
@@ -52,6 +63,7 @@ struct ast_node {
     union {
         ast_command command;
         ast_subshell subshell;
+        ast_redirection redirection;
         ast_logical logical;
         ast_pipeline pipeline;
         ast_background background;
