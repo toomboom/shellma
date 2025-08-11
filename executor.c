@@ -91,10 +91,52 @@ static void cleanup_zombies(int flag)
     }
 }
 
+static int cd_builtin(char **argv)
+{
+    int status;
+    const char *path;
+
+    if (argv[1] == NULL) {
+        path = getenv("HOME");
+        if (path == NULL) {
+            log_error("HOME variable is not set");
+            return 1;
+        }
+    } else {
+        path = argv[1];
+    }
+
+    status = chdir(path);
+    if (status == -1) {
+        log_error("cd: %s: %s", path, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+typedef int (*builtin_fn)(char **argv);
+
+builtin_fn find_builtin(const char *name)
+{
+    if (strcmp(name, "cd") == 0) {
+        return &cd_builtin;
+    }
+    return NULL;
+}
+
 static void execute_command(executor *e, const ast_command *cmd)
 {
+    builtin_fn builtin_cb;
     int pid, p, status;
 
+    builtin_cb = find_builtin(cmd->argv[0]);
+    if (builtin_cb != NULL) {
+        e->last_status = builtin_cb(cmd->argv);
+        if (e->behavior == exec_replace) {
+            _exit(e->last_status);
+        }
+        return;
+    }
     cleanup_zombies(0);
     pid = e->behavior == exec_replace ? 0 : xfork();
     if (pid == 0) {
@@ -253,42 +295,6 @@ static void execute_background(executor *e, const ast_background *bg)
     }
     e->last_status = 0;
 }
-
-#if 0
-static int cd_builtin(char **argv)
-{
-    int status;
-    const char *path;
-
-    if (argv[1] == NULL) {
-        path = getenv("HOME");
-        if (path == NULL) {
-            log_error("HOME variable is not set");
-            return 1;
-        }
-    } else {
-        path = argv[1];
-    }
-
-    status = chdir(path);
-    if (status == -1) {
-        log_error("cd: %s: %s", path, strerror(errno));
-        return 1;
-    }
-    return 0;
-}
-
-typedef int (*builtin_fn)(char **argv);
-
-builtin_fn find_builtin_fn(const char *name)
-{
-    /* todo: add echo pwd exit etc */
-    if (strcmp(name, "cd") == 0) {
-        return &cd_builtin;
-    }
-    return NULL;
-}
-#endif
 
 static void execute_logical(executor *e, const ast_logical *logic)
 {
