@@ -21,7 +21,12 @@ int read_tokens(lexer *lex, token_item **ptoks, int *ch)
             if (lex->eol) {
                 break;
             }
-        } else if (errno == 0) {
+        } else if (errno == EINTR) {
+            if (have_sigint) {
+                printf("\n> ");
+                have_sigint = 0;
+            }
+        } else {
             break;
         }
     }
@@ -32,9 +37,11 @@ int main(int argc, const char **argv)
 {
     lexer lex;
     ast_list_node *statements;
+    shell sh;
     token_item *err_pos, *tokens;
     int status, last_char = 0;
 
+    init_shell(&sh);
     lexer_init(&lex);
     for (;;) {
         status = read_tokens(&lex, &tokens, &last_char);
@@ -49,8 +56,8 @@ int main(int argc, const char **argv)
                     err_pos == NULL ? "end of line" : token_name(err_pos->type));
             goto cleanup;
         }
-        status = execute(statements); 
-        printf("Status=%d\n", status);
+        execute(&sh, statements); 
+        printf("Status=%d\n", sh.last_status);
 #ifdef DEBUG
         putchar('\n');
         log_tokens(stdout, tokens);

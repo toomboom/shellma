@@ -1,27 +1,24 @@
 #include "executor.h"
 #include "wrappers.h"
-#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 
-enum exec_behavior { exec_return, exec_replace, exec_exit };
+enum { pipe_read = 0, pipe_write = 1 };
 
-typedef struct {
-    enum exec_behavior behavior;
-    int last_status;
-} executor;
 
+/* TODO: maybe it be better way to use vector */
 typedef struct wait_item_tag {
     int pid; 
     struct wait_item_tag *next;
 } wait_item;
 
-
-static void execute_ast_node(executor *e, const ast_node *node);
+static void execute_ast_node(shell *sh, const ast_node *node);
 
 
 static void append_pid(wait_item **phead, int pid)
@@ -48,47 +45,26 @@ static void remove_pid(wait_item **phead, int pid)
     }
 }
 
+static int get_exit_status(int status)
+{
+    return WIFEXITED(status)
+        ? WEXITSTATUS(status)
+        : 128 + WTERMSIG(status);
+}
+
 static int wait_pids(wait_item *head)
 {
-    int p, status = 0;
+    int p, status = 0, last_cmd, result;
 
+    last_cmd = head->pid;
     while (head != NULL) {
         p = xwait(&status);
+        if (p == last_cmd) {
+            result = get_exit_status(status);
+        }
         remove_pid(&head, p);
     }
-    return status;
-}
-
-static void set_signal(int s, void (*handler)(int), sigset_t *mask, int flags)
-{
-    struct sigaction sa;
-
-    sa.sa_handler = handler;
-    if (mask != NULL) {
-        memcpy(&sa.sa_mask, mask, sizeof(sigset_t));
-    } else {
-        sigemptyset(&sa.sa_mask);
-    }
-    sa.sa_flags = flags;
-    sigaction(s, &sa, NULL);
-}
-
-static void sigchld_handler(int s)
-{
-    int pid;
-
-    do {
-        pid = xwaitpid(-1, NULL, WNOHANG);
-    } while (pid > 0);
-}
-
-static void cleanup_zombies(int flag)
-{
-    if (flag) {
-        set_signal(SIGCHLD, &sigchld_handler, NULL, SA_NOCLDSTOP);
-    } else {
-        set_signal(SIGCHLD, SIG_DFL, NULL, 0);
-    }
+    return result;
 }
 
 static int cd_builtin(char **argv)
@@ -124,31 +100,50 @@ builtin_fn find_builtin(const char *name)
     return NULL;
 }
 
-static void execute_command(executor *e, const ast_command *cmd)
+static void wait_for_pid(int pid, int *status, int options)
+{
+    int p;
+
+    do {
+        p = waitpid(-1, status, options);
+    } while (p != pid);
+}
+
+static void execute_command(shell *sh, const ast_command *cmd)
 {
     builtin_fn builtin_cb;
-    int pid, p, status;
+    int pid, status;
 
     builtin_cb = find_builtin(cmd->argv[0]);
     if (builtin_cb != NULL) {
-        e->last_status = builtin_cb(cmd->argv);
-        if (e->behavior == exec_replace) {
-            _exit(e->last_status);
+        sh->last_status = builtin_cb(cmd->argv);
+        if (sh->in_pipeline) {
+            exit(sh->last_status);
         }
         return;
     }
-    cleanup_zombies(0);
-    pid = e->behavior == exec_replace ? 0 : xfork();
-    if (pid == 0) {
+    if (sh->in_pipeline) {
         xexecvp(cmd->argv[0], cmd->argv);
     }
-    do {
-        p = xwait(&status);
-    } while (p != pid);
-    cleanup_zombies(1);
-    e->last_status = WIFEXITED(status)
-        ? WEXITSTATUS(status)
-        : 128 + WTERMSIG(status);
+    disable_zombie_cleanup();
+    pid = xfork();
+    if (pid == 0) {
+        raise(SIGSTOP);
+        reset_signals();
+        xexecvp(cmd->argv[0], cmd->argv);
+    }
+    wait_for_pid(pid, NULL, WUNTRACED);
+    if (sh->in_background) {
+        xsetpgid(pid, shell->pgid);
+    } else {
+        xsetpgid(pid, pid);
+        set_fg_pgroup(sh, pid);
+    }
+    kill(pid, SIGCONT);
+    wait_for_pid(pid, &status, 0);
+    restore_fg_pgroup(sh);
+    enable_zombie_cleanup();
+    sh->last_status = get_exit_status(status);
 }
 
 static void close_redir_files(redir_entry *entry, redir_entry *stop)
@@ -195,154 +190,188 @@ static int open_redir_files(redir_entry *head)
 
 static void replace_fd(int oldfd, int newfd)
 {
-    if (oldfd != -1 && oldfd != newfd) {
+    if (oldfd != newfd) {
         xdup2(oldfd, newfd);
         xclose(oldfd);
     }
 }
 
-static int need_to_save(int cur_fd, int to_save_fd, int copy_fd)
-{
-    return cur_fd == to_save_fd && copy_fd == -1;
-}
-
-static void execute_redirection(executor *e, const ast_redirection *redir)
+static void execute_redirection(shell *sh, const ast_redirection *redir)
 {
     redir_entry *entry = redir->entries;
-    int status, orig_stdin, orig_stdout, orig_stderr;
+    int status, i, orig_streams[3] = { -1, -1, -1 };
 
     status = open_redir_files(entry);
     if (status == -1) {
-        e->last_status = 1;
+        sh->last_status = 1;
         return;
     }
-    orig_stdin = orig_stdout = orig_stderr = -1;
     while (entry != NULL) {
-        if (need_to_save(entry->target_fd, 0, orig_stdin)) {
-            orig_stdin = xdup(0);
-        } else if (need_to_save(entry->target_fd, 1, orig_stdout)) {
-            orig_stdout = xdup(1);
-        } else if (need_to_save(entry->target_fd, 2, orig_stderr)) {
-            orig_stderr = xdup(2);
+        for (i = 0; i < 3; i++) {
+            if (entry->target_fd == i) {
+                if (orig_streams[i] == -1) {
+                    orig_streams[i] = xdup(i);
+                }
+                break;
+            }
         }
         replace_fd(entry->src_fd, entry->target_fd);
         entry = entry->next;
     }
-    execute_ast_node(e, redir->child);
+    execute_ast_node(sh, redir->child);
     close_redir_target(redir->entries);
-    replace_fd(orig_stdin, 0);
-    replace_fd(orig_stdout, 1);
-    replace_fd(orig_stderr, 2);
+    for (i = 0; i < 3; i++) {
+        if (orig_streams[i] != -1) {
+            replace_fd(orig_streams[i], i);
+        }
+    }
 }
+
+typedef struct {
+    int pgid;
+    int next_read;
+    wait_item *pids;
+} pipeline_job;
 
 static void redirect_and_exec(
-    executor *e, const ast_node *node,
+    shell *sh, const ast_node *node,
     int read_fd, int write_fd)
 {
-    if (read_fd != 0) {
-        xdup2(read_fd, 0);
-        xclose(read_fd);
-    }
-    if (write_fd != 1) {
-        xdup2(write_fd, 1);
-        xclose(write_fd);
-    }
-    e->behavior = exec_replace;
-    execute_ast_node(e, node);
+    replace_fd(read_fd, 0);
+    replace_fd(write_fd, 1);
+    sh->in_pipeline = 1;
+    reset_signals();
+    execute_ast_node(sh, node);
 }
 
-static void execute_pipeline(executor *e, const ast_pipeline *pipeline)
+static void pipeline_first(shell *sh, pipeline_job *job, const ast_node *node)
 {
-    enum { pipe_read = 0, pipe_write = 1 };
-    ast_list_node *head = pipeline->chain; 
-    wait_item *pids = NULL;
-    int pid, fd[2], next_read = 0;
-    
-    cleanup_zombies(0);
-    while (head->next != NULL) {
-        xpipe(fd);
-        pid = xfork();
-        append_pid(&pids, pid);
-        if (pid == 0) {
-            xclose(fd[pipe_read]);
-            redirect_and_exec(e, head->node, next_read, fd[pipe_write]);
-        }
-        if (next_read != 0) {
-            xclose(next_read);
-        }
-        next_read = fd[pipe_read];
-        xclose(fd[pipe_write]);
-        head = head->next;
-    }
+    int fd[2], pid;
+
+    xpipe(fd);
     pid = xfork();
-    append_pid(&pids, pid);
     if (pid == 0) {
-        redirect_and_exec(e, head->node, next_read, 1);
+        raise(SIGSTOP);
+        xclose(fd[pipe_read]);
+        redirect_and_exec(sh, node, 0, fd[pipe_write]);
     }
-    xclose(next_read);
-    e->last_status = wait_pids(pids);
-    cleanup_zombies(1);
+    wait_for_pid(pid, NULL, WUNTRACED);
+    xsetpgid(pid, pid);
+    set_fg_pgroup(sh, pid);
+    kill(pid, SIGCONT);
+    job->pgid = pid;
+    xclose(fd[pipe_write]);
+    job->next_read = fd[pipe_read];
+    append_pid(&job->pids, pid);
 }
 
-static void execute_background(executor *e, const ast_background *bg)
+static void pipeline_middle(shell *sh, pipeline_job *job, const ast_node *node)
+{
+    int fd[2], pid;
+
+    xpipe(fd);
+    pid = xfork();
+    if (pid == 0) {
+        xsetpgid(0, job->pgid);
+        xclose(fd[pipe_read]);
+        redirect_and_exec(sh, node, job->next_read, fd[pipe_write]);
+    }
+    xclose(fd[pipe_write]);
+    xclose(job->next_read);
+    job->next_read = fd[pipe_read];
+    append_pid(&job->pids, pid);
+}
+
+static void pipeline_last(shell *sh, pipeline_job *job, const ast_node *node)
 {
     int pid;
 
     pid = xfork();
     if (pid == 0) {
-        e->behavior = exec_exit;
-        execute_ast_node(e, bg->child);
+        xsetpgid(0, job->pgid);
+        redirect_and_exec(sh, node, job->next_read, 1);
     }
-    e->last_status = 0;
+    xclose(job->next_read);
+    append_pid(&job->pids, pid);
 }
 
-static void execute_logical(executor *e, const ast_logical *logic)
+static void execute_pipeline(shell *sh, const ast_pipeline *pipeline)
 {
-    execute_ast_node(e, logic->left);
-    if ((e->last_status == 0 && logic->type == token_and) ||
-        (e->last_status != 0 && logic->type == token_or))
+    pipeline_job job;
+    ast_list_node *head = pipeline->chain; 
+    
+    job.pids = NULL;
+    disable_zombie_cleanup();
+    pipeline_first(sh, &job, head->node);
+    head = head->next;
+    while (head->next != NULL) {
+        pipeline_middle(sh, &job, head->node);
+        head = head->next;
+    }
+    pipeline_last(sh, &job, head->node);
+    sh->last_status = wait_pids(job.pids);
+    enable_zombie_cleanup();
+    restore_fg_pgroup(sh);
+}
+
+static void execute_background(shell *sh, const ast_background *bg)
+{
+    int pid;
+
+    pid = xfork();
+    if (pid == 0) {
+        reset_signals();
+        xsetpgid(0, 0);
+        sh->pgid = getpgid();
+        sh->in_background = 1;
+        execute_ast_node(sh, bg->child);
+        _exit(sh->last_status);
+    }
+    sh->last_status = 0;
+}
+
+static void execute_logical(shell *sh, const ast_logical *logic)
+{
+    execute_ast_node(sh, logic->left);
+    if ((sh->last_status == 0 && logic->type == token_and) ||
+        (sh->last_status != 0 && logic->type == token_or))
     {
-        execute_ast_node(e, logic->right);
+        execute_ast_node(sh, logic->right);
     }
 }
 
-static void execute_ast_node(executor *e, const ast_node *node)
+static void execute_ast_node(shell *sh, const ast_node *node)
 {
     switch (node->type) {
     case ast_type_command:
-        execute_command(e, &node->command);
+        execute_command(sh, &node->command);
         break;
     case ast_type_subshell:
         printf("Not implemented yet :(\n");
+        if (sh->in_pipeline) {
+            exit(0);
+        }
         break;
     case ast_type_redirection:
-        execute_redirection(e, &node->redirection);
+        execute_redirection(sh, &node->redirection);
         break;
     case ast_type_pipeline:
-        execute_pipeline(e, &node->pipeline);
+        execute_pipeline(sh, &node->pipeline);
         break;
     case ast_type_logical:   
-        execute_logical(e, &node->logical);
+        execute_logical(sh, &node->logical);
         break;
     case ast_type_background:
-        execute_background(e, &node->background);
+        execute_background(sh, &node->background);
         break;
-    }
-    if (e->behavior == exec_exit) {
-        _exit(e->last_status);
     }
 }
 
-int execute(const ast_list_node *stmts)
+void execute(shell *sh, const ast_list_node *stmts)
 {
-    executor e;
-
-    cleanup_zombies(1);
-    e.last_status = 0;
-    e.behavior = exec_return;
+    sh->last_status = 0;
     while (stmts != NULL) {
-        execute_ast_node(&e, stmts->node);
+        execute_ast_node(sh, stmts->node);
         stmts = stmts->next;
     }
-    return e.last_status;
 }

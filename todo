@@ -1,4 +1,6 @@
 Refactoring:
+    use ... macro in xopen()
+    set the default handler for SIGTTOU for child processes
 
 Features:
     comments #

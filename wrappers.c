@@ -121,3 +121,14 @@ int xopen(const char *path, int flags, mode_t mode)
     } while (status == -1 && errno == EINTR);
     return status;
 }
+
+void xsetpgid(int pid, int pgid)
+{
+    int status;    
+
+    status = setpgid(pid, pgid);
+    if (status == -1) {
+        log_error("setpgid: %s", strerror(errno));
+        exit(13);
+    }
+}

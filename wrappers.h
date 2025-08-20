@@ -13,5 +13,6 @@ int xdup(int oldfd);
 void xdup2(int oldfd, int newfd);
 int xclose(int fd);
 int xopen(const char *path, int flags, mode_t mode);
+void xsetpgid(int pid, int pgid);
 
 #endif
