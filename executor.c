@@ -134,7 +134,7 @@ static void execute_command(shell *sh, const ast_command *cmd)
     }
     wait_for_pid(pid, NULL, WUNTRACED);
     if (sh->in_background) {
-        xsetpgid(pid, shell->pgid);
+        xsetpgid(pid, sh->pgid);
     } else {
         xsetpgid(pid, pid);
         set_fg_pgroup(sh, pid);
@@ -322,7 +322,7 @@ static void execute_background(shell *sh, const ast_background *bg)
     if (pid == 0) {
         reset_signals();
         xsetpgid(0, 0);
-        sh->pgid = getpgid();
+        sh->pgid = getpgid(0);
         sh->in_background = 1;
         execute_ast_node(sh, bg->child);
         _exit(sh->last_status);
